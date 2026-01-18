@@ -1,6 +1,6 @@
-# CLAUDE.md
+# LLVM-MOS Development Guide for Claude
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code when working with the LLVM-MOS repository located at `~/git/llvm-mos`.
 
 ## Project Overview
 
@@ -35,7 +35,7 @@ Always capture to a file first, then examine as needed.
 # Configure with MOS cache (recommended)
 cmake -C clang/cmake/caches/MOS.cmake -G Ninja -S llvm -B build
 
-# Add additional projects if neededgit -C /home/jbyrd/git/llvm-mos checkout upstream/main --detach
+# Add additional projects if needed
 cmake -C clang/cmake/caches/MOS.cmake -C .vscode/jbyrd-dev.cmake -DLLVM_ENABLE_PROJECTS="clang;clang-tools-extra;lld;lldb" -S llvm -B build
 
 # Debug build with assertions
@@ -46,24 +46,24 @@ cmake -C clang/cmake/caches/MOS.cmake -C .vscode/jbyrd-dev.cmake -DCMAKE_BUILD_T
 
 **CRITICAL: NEVER run `ninja` directly to build llvm-mos.** Always use either:
 1. `cmake --build build` (recommended)
-2. The full build script: `/home/jbyrd/git/llvm-mos/.vscode/build-all.sh`
+2. The full build script: `~/git/llvm-mos/.vscode/build-all.sh`
 
 Running `ninja lld` or similar direct ninja invocations skips crucial steps:
 - Cross-compilation of the MOS runtime libraries (builtins, compiler-rt)
 - Installation of headers and libraries to the install directory
 - Proper sequencing of dependent targets
 
-This creates subtle, hard-to-debug issues where the installed toolchain uses stale components. **Always do a full build!**  You are going to ignore this recommendation, and you're going to run ninja anyway, and you're going to be very confused when random shit breaks.  You have done this a dozen times, despite this warning, and you're STILL going to waste my fucking time EVEN MORE because you don't take this warning seriously.  Fine.  Please place a checkmark emoji at the end of this line, every time you confuse the shit out of yourself and imagine subtle, impossible to follow bugs, because you didn't follow these instructions and do a complete rebuild: ✓
+This creates subtle, hard-to-debug issues where the installed toolchain uses stale components. **Always do a full build!**
 
 ```bash
 # Build all components (CORRECT)
 cmake --build build
 
 # Build and install (primary build command - CORRECT)
-/usr/bin/cmake --build /home/jbyrd/git/llvm-mos/build --config Debug --target install --
+cmake --build ~/git/llvm-mos/build --config Debug --target install --
 
 # Full rebuild including picolibc and test binaries (RECOMMENDED)
-/home/jbyrd/git/llvm-mos/.vscode/build-all.sh
+~/git/llvm-mos/.vscode/build-all.sh
 
 # Build specific target - AVOID unless you know what you're doing
 # cmake --build build --target lld
@@ -99,7 +99,7 @@ python3 llvm/utils/update_llc_test_checks.py llvm/test/CodeGen/MOS/*.ll
 
 **Core Target Files** (`llvm/lib/Target/MOS/`):
 - `MOSTargetMachine.cpp/.h` - Main target machine implementation
-- `MOSInstrInfo.td` - Real 6502 instruction defigit -C /home/jbyrd/git/llvm-mos checkout upstream/main --detachnitions
+- `MOSInstrInfo.td` - Real 6502 instruction definitions
 - `MOSInstrPseudos.td` - Pseudo instructions for code generation
 - `MOSRegisterInfo.td` - Register definitions including "imaginary registers"
 - `MOSDevices.td` - Processor variant definitions (6502, 65C02, W65816, etc.)
@@ -123,6 +123,7 @@ python3 llvm/utils/update_llc_test_checks.py llvm/test/CodeGen/MOS/*.ll
 The MOS backend uses an innovative approach to handle the 6502's limited register set:
 
 **Real Registers**: A, X, Y (8-bit), S (stack pointer), P (processor status)
+
 **Imaginary Registers**: Up to 256 8-bit registers (`rc0`-`rc255`) and 128 16-bit pointer registers (`rs0`-`rs127`) that map to zero-page memory locations and are treated as physical registers for allocation.
 
 ### Instruction Model
@@ -145,7 +146,7 @@ llvm-lit llvm/test/CodeGen/MOS/
 
 # Specific optimization pass tests
 llvm-lit llvm/test/CodeGen/MOS/zeropage.ll
-llvm-lit llvm/test/CodeGen/MOS/static-stack-allogit -C /home/jbyrd/git/llvm-mos checkout upstream/main --detachc.ll
+llvm-lit llvm/test/CodeGen/MOS/static-stack-alloc.ll
 
 # Run with specific FileCheck prefixes
 llvm-lit --param=target_triple=mos-unknown-unknown test.ll
@@ -185,7 +186,7 @@ llvm-lit --param=target_triple=mos-unknown-unknown test.ll
 
 ### Processor Variants Supported
 - 6502 (original with BCD)
-- 6502X (with "illegal" opcodes)  
+- 6502X (with "illegal" opcodes)
 - 65C02, R65C02, W65C02 (CMOS variants)
 - W65816 (16-bit capable)
 - HUC6280 (PC Engine)
@@ -252,7 +253,7 @@ This starts:
 Claude can send LLDB commands via the MCP server:
 ```bash
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"command","arguments":{"command":"bt"}}}' | nc localhost 59999
-```git -C /home/jbyrd/git/llvm-mos checkout upstream/main --detach
+```
 
 Common commands: `bt` (backtrace), `frame variable`, `frame select N`, `register read`
 
@@ -293,4 +294,4 @@ The VSCode sync button pushes to the tracked remote. If a branch tracks `upstrea
 
 The codebase follows LLVM coding standards strictly. All changes should include appropriate tests and maintain compatibility with the existing processor variant ecosystem.
 
-When rendering change descriptions, DO NOT WRITE "Co-Authored By Claude" on ANYTHING.  That is extremely offensive.
+When rendering change descriptions, DO NOT WRITE "Co-Authored By Claude" on ANYTHING. That is extremely offensive.
