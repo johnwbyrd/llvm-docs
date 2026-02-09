@@ -1,0 +1,63 @@
+{
+    // See https://go.microsoft.com/fwlink/?LinkId=733558
+    // for the documentation about the tasks.json format
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "mame-launch-nested_structs-o0",
+            "type": "shell",
+            "command": "cd /home/jbyrd/git/mame && ./mame zbcm6502 -debug -window -debugger gdbstub -elfload /home/jbyrd/git/dwarf-torture/build/bin/nested_structs_O0",
+            "isBackground": true,
+"problemMatcher": {
+                "owner": "mame",
+                "pattern": {
+                    "regexp": "^NEVERMATCH^"
+                },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": "^.",
+                    "endsPattern": "^gdbstub: listening"
+                }
+            }
+        },
+        {
+            "label": "mame-launch-sort-q0",
+            "type": "shell",
+            "command": "cd /home/jbyrd/git/mame && ./mame zbcm6502 -debug -window -debugger gdbstub -elfload /home/jbyrd/git/dwarf-torture/build/bin/float_qsort_O0",
+            "isBackground": true,
+"problemMatcher": {
+                "owner": "mame",
+                "pattern": {
+                    "regexp": "^NEVERMATCH^"
+                },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": "^.",
+                    "endsPattern": "^gdbstub: listening"
+                }
+            }
+        },
+        {
+            "label": "mame-launch-sort-q2",
+            "type": "shell",
+            "command": "cd /home/jbyrd/git/mame && ./mame zbcm6502 -debug -window -debugger gdbstub -elfload /home/jbyrd/git/dwarf-torture/build/bin/float_qsort_O2",
+            "isBackground": true,
+"problemMatcher": {
+                "owner": "mame",
+                "pattern": {
+                    "regexp": "^NEVERMATCH^"
+                },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": "^.",
+                    "endsPattern": "^gdbstub: listening"
+                }
+            }
+        },
+        {
+            "label": "mame-kill",
+            "type": "shell",
+            "command": "ps -ef | grep 'mame' | awk '{print $2}' | xargs -r kill -9"
+        }
+    ]
+}

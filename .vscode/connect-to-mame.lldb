@@ -1,0 +1,3 @@
+file /home/jbyrd/git/picolibc/build-mos/newlib/libm/test/math_test_asin
+gdb-remote localhost:23946
+b main

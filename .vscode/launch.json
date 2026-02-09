@@ -1,0 +1,111 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb-dap",
+            "request": "attach",
+            "name": "nested_structs_o0 on MAME",
+            "preLaunchTask": "mame-launch-nested_structs-o0",
+            "program": "/home/jbyrd/git/dwarf-torture/build/bin/nested_structs_O0",
+            "initCommands": [
+                "log enable lldb comm"
+            ],
+            "attachCommands": [
+                "gdb-remote localhost:23946",
+                "process interrupt"
+            ],
+            "postDebugTask": "mame-kill"
+        },
+        {
+            "type": "lldb-dap",
+            "request": "attach",
+            "name": "float_qsort_O0 on MAME",
+            "preLaunchTask": "mame-launch-sort-q0",
+            "program": "/home/jbyrd/git/dwarf-torture/build/bin/float_qsort_O0",
+            "initCommands": [
+                "log enable lldb comm"
+            ],
+            "attachCommands": [
+                "gdb-remote localhost:23946",
+                "process interrupt"
+            ],
+            "postDebugTask": "mame-kill"
+        },
+        {
+            "type": "lldb-dap",
+            "request": "attach",
+            "name": "float_qsort_O2 on MAME",
+            "preLaunchTask": "mame-launch-sort-q2",
+            "program": "/home/jbyrd/git/dwarf-torture/build/bin/float_qsort_O2",
+            "initCommands": [
+                "log enable lldb comm"
+            ],
+            "attachCommands": [
+                "gdb-remote localhost:23946",
+                "process interrupt"
+            ],
+            "postDebugTask": "mame-kill"
+        },
+        {
+            "type": "lldb-dap",
+            "request": "attach",
+            "name": "lldb-dap with mame",
+            "preLaunchTask": "mame-launch",
+            "program": "/home/jbyrd/git/picolibc/build-mos/newlib/libm/test/math_test_asin",
+            "attachCommands": [
+                "gdb-remote localhost:23946",
+                "process interrupt"
+            ],
+            "initCommands": [
+                "log enable -f /tmp/lldb-gdb-remote.log gdb-remote packets process",
+                "log enable -f /tmp/lldb-mos.log target-mos reg sym abi",
+                "log enable -f /tmp/lldb-process.log lldb process thread"
+            ],
+            "postDebugTask": "mame-kill"
+        },
+        {
+            "type": "cppdbg",
+            "request": "launch",
+            "name": "Debug lldb-dap crash",
+            "program": "/home/jbyrd/git/llvm-mos/build/bin/lldb-dap",
+            "args": ["<", "/tmp/lldb_dap_input"],
+            "cwd": "/home/jbyrd/git/llvm-mos",
+            "MIMode": "gdb",
+            "preLaunchTask": "setup-crash-pipe",
+            "setupCommands": [
+                {
+                    "description": "Enable pretty-printing",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                }
+            ]
+        },
+        {
+            "type": "cppdbg",
+            "request": "launch",
+            "name": "ASAN Debug",
+            "program": "/home/jbyrd/git/llvm-mos/build/bin/mos-clang",
+            "args": [
+                "-I/home/jbyrd/git/llvm-mos-sdk/mos-platform/nes/neslib/..",
+                "-I/home/jbyrd/git/llvm-mos-sdk/mos-platform/common/asminc/.", 
+                "-I/home/jbyrd/git/llvm-mos-sdk/mos-platform/nes/neslib/.",
+                "-Os",
+                "-DNDEBUG",
+                "-flto",
+                "-MD",
+                "-MT",
+                "mos-platform/nes/neslib/CMakeFiles/nes-neslib.dir/rand.s.obj",
+                "-MF",
+                "mos-platform/nes/neslib/CMakeFiles/nes-neslib.dir/rand.s.obj.d",
+                "-o",
+                "mos-platform/nes/neslib/CMakeFiles/nes-neslib.dir/rand.s.obj",
+                "-c",
+                "/home/jbyrd/git/llvm-mos-sdk/mos-platform/nes/neslib/rand.s"
+            ],
+            "cwd": "/home/jbyrd/git/llvm-mos-sdk/build"
+        }
+    ]
+}

@@ -1,294 +1,233 @@
 # LLDB ProcessSimulator Plugin
 
-## Overview
+## Problem
 
-Implement an LLDB Process plugin that provides GDB's `target sim` functionality - a built-in simulator that LLDB can drive directly without a separate process or network protocol.
+We want to debug emulated code using LLDB without requiring a separate emulator process or network protocol. The emulator should run in-process, providing fast memory/register access and enabling features like reverse debugging.
 
-**Goal:** `(lldb) target sim program.elf` launches the emulator inside LLDB, enabling breakpoints, stepping, memory inspection, and register access through standard LLDB commands.
+## Goal
+
+```
+(lldb) target create program.elf
+(lldb) process launch --plugin simulator
+```
+
+This launches the emulator inside LLDB, enabling breakpoints, watchpoints, stepping, and memory/register inspection through standard LLDB commands.
+
+---
 
 ## Design Principles
 
-1. **Generic from the start** - The Context interface works for any target, not just MOS
-2. **Breakpoints in Context** - The emulator handles breakpoint checking internally
-3. **Register access via byte buffer** - Uses LLDB's `DynamicRegisterInfo` + `RegisterContextMemory` pattern
-4. **Imaginary registers included** - Compiler-generated zero-page registers exposed through register interface
+1. **Single Source of Truth** - All debugging state lives in `emu::System`, not duplicated in LLDB
+2. **System owns debugging primitives** - Breakpoints, watchpoints, stop reasons
+3. **Context owns per-CPU state** - Registers, PC, instruction execution
+4. **ProcessSimulator is a stateless adapter** - Delegates everything to System
+5. **Target-agnostic** - ProcessSimulator knows `emu::System` and `emu::Context`, never `MOS::Context`
+
+---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│ LLDB                                                    │
-│  ├── ProcessSimulator (new plugin)                      │
-│  │    └── ThreadSimulator                               │
-│  │         └── RegisterContextSimulator                 │
-│  └── existing: ABISysV_mos, DynamicRegisterInfo        │
-└────────────────────┬────────────────────────────────────┘
-                     │ uses
-┌────────────────────▼────────────────────────────────────┐
-│ llvm/include/llvm/Emulator/                             │
-│  ├── Context.h (extended with debug interface)          │
-│  ├── System.h                                           │
-│  └── Memory.h                                           │
-└────────────────────┬────────────────────────────────────┘
-                     │ implemented by
-┌────────────────────▼────────────────────────────────────┐
-│ Target-specific (e.g., MOS)                             │
-│  └── MOSContext (existing, extends Context)             │
-└─────────────────────────────────────────────────────────┘
+LLDB
+├── ProcessSimulator (new) ─────────────► emu::System
+│   └── One ThreadSimulator per CPU      │
+│       └── RegisterContextSimulator     │
+│                                        │
+                                         ▼
+                              ┌─────────────────────┐
+                              │    emu::System      │
+                              │  - breakpoints      │
+                              │  - watchpoints      │
+                              │  - stop reasons     │
+                              │  - memory routing   │
+                              └─────────────────────┘
+                                         │
+                              ┌──────────┼──────────┐
+                              ▼          ▼          ▼
+                         emu::Context  emu::Context  emu::Device
+                          (CPU 0)      (CPU 1...)   (Memory, etc.)
 ```
 
-## Context Interface Extensions
+### Responsibility Boundaries
 
-Add to `llvm/include/llvm/Emulator/Context.h`:
+| Component | Owns | Does NOT Own |
+|-----------|------|--------------|
+| `emu::System` | Breakpoints, watchpoints, stop reasons, memory routing | Per-CPU registers |
+| `emu::Context` | Registers, PC, flags, instruction execution | Breakpoints, watchpoints |
+| `ProcessSimulator` | LLDB ↔ System translation | Any debugging state |
 
-```cpp
-//===--------------------------------------------------------------------===//
-// Debug Interface (for LLDB integration)
-//===--------------------------------------------------------------------===//
+---
 
-/// Register descriptor for debugger integration.
-struct RegisterDesc {
-  const char *Name;
-  uint32_t ByteSize;
-  uint32_t ByteOffset;  // Offset in register state buffer
-  uint32_t DWARFNumber;
-  uint32_t LLDBKind;    // lldb_regnum_generic_*
-};
+## Key Design Decisions
 
-/// Get register descriptors. Called after ELF load to include imaginary registers.
-/// Returns vector of descriptors (may include dynamically discovered registers).
-virtual std::vector<RegisterDesc> getRegisterInfo() const = 0;
+### How does ProcessSimulator create a target-specific emulator?
 
-/// Get total size of register state buffer in bytes.
-virtual size_t getRegisterStateSize() const = 0;
+Use LLVM's `TargetRegistry` pattern (same as `DisassemblerLLVMC`):
 
-/// Read all registers into buffer. Returns bytes written.
-virtual size_t readRegisters(void *Buffer, size_t Size) const = 0;
+1. Get triple from LLDB's `Target::GetArchitecture()`
+2. Look up LLVM Target via `TargetRegistry::lookupTarget()`
+3. Create MC infrastructure (MCRegisterInfo, MCAsmInfo, MCSubtargetInfo, MCContext)
+4. Call `Target::createEmulator()` which returns abstract `emu::Context*`
 
-/// Write all registers from buffer. Returns bytes read.
-virtual size_t writeRegisters(const void *Buffer, size_t Size) = 0;
+This keeps ProcessSimulator completely target-agnostic. MOS-specific code stays in `llvm/lib/Target/MOS/`.
 
-//===--------------------------------------------------------------------===//
-// Breakpoint Support
-//===--------------------------------------------------------------------===//
+**Reference:** `llvm/include/llvm/MC/TargetRegistry.h` for `createEmulator()` signature.
 
-/// Add a breakpoint at the given address.
-virtual void addBreakpoint(uint64_t Addr) = 0;
+### How do breakpoints work?
 
-/// Remove a breakpoint at the given address.
-virtual void removeBreakpoint(uint64_t Addr) = 0;
+LLDB calls `ProcessSimulator::EnableBreakpointSite()` with an address. ProcessSimulator delegates to `System::addBreakpoint()`. When `System::run()` executes, it checks breakpoints before each instruction and sets a stop reason if hit.
 
-/// Check if a breakpoint exists at the given address.
-virtual bool hasBreakpoint(uint64_t Addr) const = 0;
+### How do stop reasons propagate?
 
-/// Clear all breakpoints.
-virtual void clearBreakpoints() = 0;
+1. `System::run()` returns when execution stops (breakpoint, halt, error)
+2. `System::getStopReason()` and `getStopAddress()` report why
+3. `ThreadSimulator::CalculateStopInfo()` translates to LLDB's `StopInfo`
 
-/// Stop reason after step() returns.
-enum class StopReason {
-  None,           // Still running
-  Breakpoint,     // Hit a breakpoint
-  Step,           // Single step completed
-  Halted,         // BRK or halt() called
-  Error           // Execution error
-};
+**Stop reason mapping:**
 
-/// Get the reason execution stopped.
-virtual StopReason getStopReason() const = 0;
+| emu::System::StopReason | LLDB StopInfo |
+|-------------------------|---------------|
+| Breakpoint | `StopInfo::CreateStopReasonWithBreakpointSiteID()` |
+| Watchpoint | `StopInfo::CreateStopReasonWithWatchpointID()` |
+| SingleStep | `StopInfo::CreateStopReasonToTrace()` |
+| Halted | Set process state to `eStateExited` |
+| Error | Set process state to `eStateCrashed` |
 
-/// Get address that caused the stop (for breakpoints).
-virtual uint64_t getStopAddress() const { return getPC(); }
-```
+**Reference:** `lldb/include/lldb/Target/StopInfo.h:140-162` for factory methods.
+
+### How does register access work?
+
+`RegisterContextSimulator` calls `emu::Context::readRegister()` and `writeRegister()` directly. Register numbers use DWARF numbering, which the emulator already supports.
+
+No memory indirection - registers live as C++ members in the Context.
+
+### How does ELF loading work?
+
+In `DoLaunch()`:
+1. Get `ObjectFile` from the module
+2. Iterate `SectionList`
+3. Copy each section's contents into `emu::Memory` via `writeBlock()`
+4. Call `Context::reset()` to initialize CPU state
+
+**Entry point handling varies by architecture:**
+- MOS: `reset()` reads the reset vector from 0xFFFC, no explicit PC set needed
+- Other architectures: May need `setPC(obj->GetEntryPointAddress())` after reset
+
+### How does single-stepping work?
+
+LLDB calls `DoResume()` with step information available via `GetThreadList()`. For single-step:
+1. Call `Context::step()` once instead of `System::run()`
+2. Set stop reason to `SingleStep`
+3. Return immediately
+
+For continue, call `System::run()` which executes until breakpoint/halt.
+
+### How does the plugin lifecycle work?
+
+LLDB plugins follow this pattern:
+- `Initialize()` - Called once at LLDB startup, registers plugin with `PluginManager`
+- `CreateInstance()` - Called when user requests this plugin, returns new ProcessSimulator
+- `Terminate()` - Called at LLDB shutdown, unregisters plugin
+
+`CreateInstance()` receives the Target and Listener. It should check if an emulator exists for the target's architecture before creating the process.
+
+### When should CanDebug() return true?
+
+`CanDebug()` should return true when:
+1. The user explicitly selected the plugin (`--plugin simulator`), OR
+2. The target architecture has a registered emulator AND no better option exists
+
+For initial implementation, require explicit selection. Auto-selection can come later.
+
+### What's the threading model?
+
+`DoResume()` should be synchronous for simplicity:
+1. Call `System::run()` (blocks until stop)
+2. Set process state based on stop reason
+3. Return
+
+LLDB handles the async wrapper. No need for separate emulator threads.
+
+---
 
 ## Files to Create
 
-### 1. `lldb/source/Plugins/Process/sim/ProcessSimulator.h`
-
-```cpp
-class ProcessSimulator : public Process {
-public:
-  // Plugin interface
-  static lldb::ProcessSP CreateInstance(lldb::TargetSP target_sp,
-                                         lldb::ListenerSP listener_sp,
-                                         const FileSpec *crash_file_path,
-                                         bool can_connect);
-  static void Initialize();
-  static void Terminate();
-  static llvm::StringRef GetPluginNameStatic() { return "sim"; }
-
-  // Process interface
-  bool CanDebug(lldb::TargetSP target_sp, bool plugin_specified_by_name) override;
-  Status DoLaunch(Module *exe_module, ProcessLaunchInfo &launch_info) override;
-  Status DoResume(lldb::RunDirection direction) override;
-  Status DoHalt(bool &caused_stop) override;
-  Status DoDestroy() override;
-  void RefreshStateAfterStop() override;
-  bool IsAlive() override;
-
-  // Memory
-  size_t DoReadMemory(lldb::addr_t addr, void *buf, size_t size, Status &error) override;
-  size_t DoWriteMemory(lldb::addr_t addr, const void *buf, size_t size, Status &error) override;
-
-  // Breakpoints
-  Status EnableBreakpointSite(BreakpointSite *bp_site) override;
-  Status DisableBreakpointSite(BreakpointSite *bp_site) override;
-
-  // Threads
-  bool DoUpdateThreadList(ThreadList &old, ThreadList &new_list) override;
-
-private:
-  std::unique_ptr<llvm::emu::Context> m_context;
-  std::unique_ptr<llvm::emu::System> m_system;
-};
+```
+lldb/source/Plugins/Process/Simulator/
+├── CMakeLists.txt
+├── ProcessSimulator.h/.cpp      # Process subclass, owns System
+├── ThreadSimulator.h/.cpp       # Thread subclass, wraps Context
+└── RegisterContextSimulator.h/.cpp  # RegisterContext, calls Context::readRegister()
 ```
 
-### 2. `lldb/source/Plugins/Process/sim/ProcessSimulator.cpp`
+Also modify: `lldb/source/Plugins/Process/CMakeLists.txt` to add subdirectory.
 
-Implementation that:
-- Creates target-specific Context via TargetRegistry
-- Loads ELF sections into System memory
-- Delegates execution to Context::step()
-- Converts Context::StopReason to LLDB stop events
+---
 
-### 3. `lldb/source/Plugins/Process/sim/ThreadSimulator.h/cpp`
+## Required emu::System Interface
 
-Single-threaded for now. Creates RegisterContextSimulator.
+System needs these capabilities (most already exist):
 
-### 4. `lldb/source/Plugins/Process/sim/RegisterContextSimulator.h/cpp`
+**Breakpoints:** `addBreakpoint()`, `removeBreakpoint()`, `hasBreakpoint()`
 
-Uses Context::getRegisterInfo() to build DynamicRegisterInfo.
-Uses Context::readRegisters()/writeRegisters() for state access.
+**Watchpoints:** `addWatchpoint()`, `removeWatchpoint()` with read/write/readwrite types
 
-### 5. `lldb/source/Plugins/Process/sim/CMakeLists.txt`
+**Stop reasons:** `getStopReason()`, `getStopAddress()`, `getStoppedContext()`, `clearStopReason()`
 
-```cmake
-add_lldb_library(lldbPluginProcessSimulator PLUGIN
-  ProcessSimulator.cpp
-  ThreadSimulator.cpp
-  RegisterContextSimulator.cpp
+**Execution:** `run()` that stops on breakpoint/watchpoint/halt/error
 
-  LINK_LIBS
-    lldbCore
-    lldbTarget
-    LLVMEmulator
-    LLVMMC
-    LLVMObject
-)
-```
+**Memory:** `read()`, `write()` that route through devices
 
-## Files to Modify
+**Memory sizing:** Use `Context::getAddressBits()` to determine address space size. For MOS (16-bit), create 64KB memory. For 32-bit+ architectures, may need sparse memory or different approach.
 
-### 1. `llvm/include/llvm/Emulator/Context.h`
+---
 
-Add the debug interface methods described above.
+## Required emu::Context Interface
 
-### 2. `llvm/lib/Target/MOS/MCTargetDesc/MOSContext.h/cpp`
+Context needs these capabilities (most already exist):
 
-Implement the new Context methods:
-- `getRegisterInfo()` - return vector of RegisterDesc for A, X, Y, S, PC, flags, plus imaginary registers
-- `getRegisterStateSize()` - return size needed for all registers
-- `readRegisters()`/`writeRegisters()` - pack/unpack register state
-- `addBreakpoint()`/`removeBreakpoint()` - manage breakpoint set
-- Modify `step()` to check breakpoints and set StopReason
+**Execution:** `step()`, `reset()`, `isHalted()`, `getExitCode()`
 
-### 3. `lldb/source/Plugins/Process/CMakeLists.txt`
+**State:** `getPC()`, `setPC()`, `getCycles()`, `getAddressBits()`
 
-Add `add_subdirectory(sim)`
+**Register access:** `getNumRegisters()`, `readRegister()`, `writeRegister()` using DWARF numbers
 
-### 4. `lldb/source/Plugins/Plugins.def`
-
-Register the plugin.
+---
 
 ## Implementation Order
 
-### Phase 1: Context Interface
+1. **Verify emu::System/Context have required methods** - Check existing headers
+2. **Create ProcessSimulator skeleton** - Plugin registration, `CanDebug()`, `CreateInstance()`
+3. **Implement emulator initialization** - MC infrastructure setup, `createEmulator()` call
+4. **Implement ELF loading** - Section iteration and memory population
+5. **Create ThreadSimulator** - Thread wrapper with `CalculateStopInfo()`
+6. **Create RegisterContextSimulator** - Direct register access
+7. **Implement DoResume()** - Call `System::run()`, handle stop reasons
+8. **Implement breakpoints** - `EnableBreakpointSite()` → `System::addBreakpoint()`
+9. **Test with simple program** - Verify basic debugging works
 
-1. Add debug interface to `Context.h` (pure virtual methods)
-2. Implement in MOSContext
-3. Add breakpoint checking to MOSContext::step()
-4. Test with existing llvm-mc --run to verify no regression
+---
 
-### Phase 2: Minimal Process Plugin
+## References
 
-1. Create ProcessSimulator with just DoLaunch + IsAlive
-2. Register plugin
-3. Verify `target sim` command appears in LLDB
+**LLDB Process plugins to study:**
+- `lldb/source/Plugins/Process/minidump/` - Post-mortem debugging, no live process
+- `lldb/source/Plugins/Process/scripted/` - Synthetic process, custom memory/registers
 
-### Phase 3: Execution Control
+**LLVM Target registration:**
+- `llvm/include/llvm/MC/TargetRegistry.h` - `createEmulator()` factory pattern
+- `lldb/source/Plugins/Disassembler/LLVMC/DisassemblerLLVMC.cpp` - How to get LLVM Target from triple
 
-1. Implement DoResume (calls Context::step() in loop)
-2. Implement DoHalt (sets flag checked by step loop)
-3. Implement breakpoint enable/disable
-4. Test: set breakpoint, run, verify stop
+**Emulator framework:**
+- `llvm/include/llvm/Emulator/System.h` - System interface
+- `llvm/include/llvm/Emulator/Context.h` - Context interface
+- `llvm/tools/llvm-emu/llvm-emu.cpp` - Example of setting up System/Context/Memory
 
-### Phase 4: Memory & Registers
+---
 
-1. Implement DoReadMemory/DoWriteMemory (delegate to System)
-2. Implement RegisterContextSimulator
-3. Test: `register read`, `memory read`
+## Future Work (Out of Scope)
 
-### Phase 5: Integration
-
-1. Verify source-level debugging works with DWARF
-2. Test stepping (step, next, finish)
-3. Test variable inspection
-
-## UX
-
-```
-$ lldb program.elf
-(lldb) target sim
-(lldb) breakpoint set -n main
-(lldb) run
-Process 1 stopped
-* thread #1, stop reason = breakpoint 1.1
-    frame #0: main at program.c:10
-(lldb) register read
-       a = 0x00
-       x = 0x00
-       y = 0x00
-      pc = 0x0200
-(lldb) step
-(lldb) print counter
-(int) $0 = 42
-```
-
-Alternative invocation:
-```
-$ lldb
-(lldb) target sim program.elf
-```
-
-Both workflows are supported - be generous in what we accept.
-
-## Design Decisions
-
-1. **UX: Be generous in what we accept**
-   - `target sim program.elf` - loads and launches
-   - `file program.elf` then `target sim` - also works
-   - Infer architecture from ELF's e_machine field
-
-2. **Imaginary registers via register interface**
-   - The Context's getRegisterInfo() includes imaginary registers (__rc0, __rs0, etc.)
-   - MOSContext discovers these from ELF symbols at load time
-   - This means getRegisterInfo() is called after ELF load, not at construction
-
-3. **Thread model**: Single thread (tid=1) for now. Interface allows multi-thread later.
-
-4. **Cycle limiting**: Default max-cycles during `run` to prevent hangs. Can be overridden.
-
-## Comparison with Current Approach
-
-| Aspect | Current (MAME + GDB stub) | ProcessSimulator |
-|--------|---------------------------|------------------|
-| Separate process | Yes (MAME) | No (in-process) |
-| Network protocol | GDB remote | Direct API calls |
-| Startup time | Slow (spawn MAME) | Fast |
-| Memory access | Serialized over socket | Direct pointer |
-| Register access | Packet round-trip | Direct read |
-| Maintenance | Two codebases | Single codebase |
-
-## Dependencies
-
-- `LLVMEmulator` library must be accessible from LLDB
-- May need to move some headers to `llvm/include/llvm/Emulator/` if not already public
+- **Reverse debugging** - Undo journal for `reverse-step`
+- **Semihosting** - File I/O passthrough
+- **Multi-CPU synchronization** - Clock-based scheduling
+- **Source-level debugging** - Should work automatically if registers/memory work correctly

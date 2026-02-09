@@ -1,0 +1,18 @@
+{
+    "cmake.useCMakePresets": "never",
+    "cmake.cacheInit": [
+        "${workspaceFolder}/.vscode/jbyrd-dev.cmake",
+        "${workspaceFolder}/clang/cmake/caches/MOS.cmake"
+    ],
+    "clang-format.executable": "/home/jbyrd/git/llvm-mos/build/bin/clang-format",
+    "cmake.sourceDirectory": "/home/jbyrd/git/llvm-mos/llvm",
+    "cmake.environment": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "True"
+    },
+    "lldb-dap.executable-path": "/home/jbyrd/git/llvm-mos/build/install/bin/lldb-dap",
+    "lldb.executable": "/home/jbyrd/git/llvm-mos/build/install/bin/lldb",
+    "lldb.server": "/home/jbyrd/git/llvm-mos/build/install/bin/lldb",
+    "lldb.library": "",
+    "lldb-dap.captureSessionLogs": true,
+    "claudeCode.allowDangerouslySkipPermissions": false
+}
